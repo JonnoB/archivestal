@@ -14,7 +14,19 @@ def __():
     from PIL import Image, ImageDraw
     import matplotlib.pyplot as plt
     import io
-    return Image, ImageDraw, convert_from_path, io, mo, os, pd, plt
+
+    image_drive = '/media/jonno/ncse'
+    return (
+        Image,
+        ImageDraw,
+        convert_from_path,
+        image_drive,
+        io,
+        mo,
+        os,
+        pd,
+        plt,
+    )
 
 
 @app.cell
@@ -36,7 +48,15 @@ def __(mo):
 
 
 @app.cell
-def __(os, pd):
+def __(pd):
+    page_data = pd.read_parquet('data/periodicals_page.parquet')
+
+
+    return (page_data,)
+
+
+@app.cell
+def __(os, page_data, pd):
     all_bounding_boxes = []
     for _file in os.listdir("data/new_parquet"):
         _temp = pd.read_parquet(os.path.join("data/new_parquet",_file))
@@ -51,7 +71,18 @@ def __(os, pd):
     all_bounding_boxes['file_name'] = all_bounding_boxes['file_name'] +'.pdf'
 
     all_bounding_boxes['date'] = pd.to_datetime(all_bounding_boxes['file_name'].str.extract(r'-(\d{4}-\d{2}-\d{2})\.pdf')[0], format='%Y-%m-%d')
+
+    all_bounding_boxes = all_bounding_boxes.merge(
+        page_data[['id', 'height', 'width']].set_index('id'),
+        left_on='page_id',
+        right_index=True
+    )
     return (all_bounding_boxes,)
+
+
+@app.cell
+def __():
+    return
 
 
 @app.cell
@@ -187,7 +218,6 @@ def __(pd):
 
 @app.cell
 def __():
-    #/media/jonno/ncse
     return
 
 
@@ -291,7 +321,19 @@ def __(scale_bbox):
 
 
 @app.cell
-def __(all_bounding_boxes):
+def __(mo):
+    mo.md(
+        r"""
+        # Create subset
+
+        There is too much data. I am creating a subset of only the overlapping periods to allow a compare and contrast
+        """
+    )
+    return
+
+
+@app.cell
+def __(all_bounding_boxes, periodicals):
     mask_1850_1852 = all_bounding_boxes['date'].between('1850-01-01', '1852-12-31')
 
     # Create a mask for dates between 1858-1860 (inclusive)
@@ -307,14 +349,147 @@ def __(all_bounding_boxes):
     # Apply the combined mask to the dataframe
     subset_df = all_bounding_boxes[combined_mask]
 
-    print(f"Rows in dataset:len(subset_df['page_id'].unique())")
+    subset_df = subset_df.merge(periodicals[['id','folder_path']], left_on='publication_id', right_on='id')
+
+    print(f"Rows in dataset:{len(subset_df['page_id'].unique())}")
     subset_df
     return combined_mask, mask_1850_1852, mask_1858_1860, subset_df
 
 
 @app.cell
+def __(subset_df):
+    target_pages_isues = subset_df.copy().loc[:, 
+    ['issue_id', 'page_id', 'page_number', 'file_name', 'folder_path', 'width', 'height']].drop_duplicates().reset_index(drop=True)
+
+
+    print(f"Number of issues to extract {len(target_pages_isues[['issue_id']].drop_duplicates())}, number of pages {len(target_pages_isues[['page_id']].drop_duplicates())},")
+    target_pages_isues
+    return (target_pages_isues,)
+
+
+@app.cell
+def __(convert_from_path, image_drive, os, target_pages_isues):
+    check_row_df = target_pages_isues.loc[0, :]
+
+    _file = os.path.join(image_drive, check_row_df['folder_path'], check_row_df['file_name'])
+
+    all_pages = convert_from_path(_file, dpi = 300)
+    return all_pages, check_row_df
+
+
+@app.cell
 def __():
+    def scale_bboxes(bbox_df, target_image_size):
+        # Find the maximum x1 and y1 values
+        max_x1 = max(bbox['x1'] for bbox in bbox_df.values())
+        max_y1 = max(bbox['y1'] for bbox in bbox_df.values())
+
+        # Calculate scale factors
+        scale_x = target_image_size[0] / max_x1
+        scale_y = target_image_size[1] / max_y1
+
+        # Create a new dictionary with scaled coordinates
+        scaled_bbox_dict = {}
+        for key, bbox in bbox_df.items():
+            scaled_bbox_dict[key] = {
+                'x0': int(bbox['x0'] * scale_x),
+                'x1': int(bbox['x1'] * scale_x),
+                'y0': int(bbox['y0'] * scale_y),
+                'y1': int(bbox['y1'] * scale_y)
+            }
+
+        return scaled_bbox_dict
+    return (scale_bboxes,)
+
+
+@app.cell
+def __(
+    Image,
+    ImageDraw,
+    all_pages,
+    check_row_df,
+    io,
+    page_dict,
+    plt,
+    scale_bbox,
+):
+    _page = all_pages[check_row_df['page_number']-1].copy()
+    _draw = ImageDraw.Draw(_page)
+
+    print(_page.size)
+
+    # Your bounding box dictionary
+    _bounding_boxes = page_dict[check_row_df['page_id']]
+
+    # Draw rectangles for each bounding box
+    for _box_id, _coords in _bounding_boxes.items():
+        _x0, _y0, _x1, _y1 = scale_bbox([_coords["x0"], _coords["y0"], _coords["x1"], _coords["y1"]], 90, 300)
+        _draw.rectangle([_x0, _y0, _x1, _y1], outline="red", width=2)
+
+    _buf = io.BytesIO()
+    _page.save(_buf, format='PNG')
+    _buf.seek(0)
+
+    # Display the image in the notebook
+    plt.figure(figsize=(15, 20))
+    plt.imshow(Image.open(_buf))
+    plt.axis('off')
+    plt.show()
     return
+
+
+@app.cell
+def __(Image, ImageDraw, all_pages, check_row_df, io, page_dict, plt):
+    def scale_bbox2(bbox, original_size, new_size):
+        '''
+        Scale the bounding box from the original image size to the new image size.
+        
+        :param bbox: List of [x1, y1, x2, y2] coordinates of the bounding box
+        :param original_size: Tuple of (width, height) of the original image
+        :param new_size: Tuple of (width, height) of the new image
+        :return: Scaled bounding box coordinates
+        '''
+        original_width, original_height = original_size
+        new_width, new_height = new_size
+        
+        # Calculate scale factors for width and height
+        width_scale = new_width / original_width
+        height_scale = new_height / original_height
+        
+        # Scale the bounding box coordinates
+        x1, y1, x2, y2 = bbox
+        new_x1 = int(x1 * width_scale)
+        new_y1 = int(y1 * height_scale)
+        new_x2 = int(x2 * width_scale)
+        new_y2 = int(y2 * height_scale)
+        
+        return [new_x1, new_y1, new_x2, new_y2]
+
+
+    _page = all_pages[check_row_df['page_number']-1].copy()
+    _draw = ImageDraw.Draw(_page)
+
+    print(_page.size)
+
+    # Your bounding box dictionary
+    _bounding_boxes = page_dict[check_row_df['page_id']]
+
+    # Draw rectangles for each bounding box
+    for _box_id, _coords in _bounding_boxes.items():
+        _x0, _y0, _x1, _y1 = scale_bbox2([_coords["x0"], _coords["y0"], _coords["x1"], _coords["y1"]],
+                                         (check_row_df['width'], check_row_df['height']), _page.size)
+        _draw.rectangle([_x0, _y0, _x1, _y1], outline="red", width=2)
+
+    _buf = io.BytesIO()
+    _page.save(_buf, format='PNG')
+    _buf.seek(0)
+
+    # Display the image in the notebook
+    plt.figure(figsize=(15, 20))
+    plt.imshow(Image.open(_buf))
+    plt.axis('off')
+    plt.show()
+    return (scale_bbox2,)
 
 
 if __name__ == "__main__":
