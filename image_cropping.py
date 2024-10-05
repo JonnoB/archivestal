@@ -186,7 +186,8 @@ def __(all_bounding_boxes, periodicals):
     # Apply the combined mask to the dataframe
     subset_df = all_bounding_boxes[combined_mask]
 
-    subset_df = subset_df.merge(periodicals[['id','folder_path']], left_on='publication_id', right_on='id')
+    subset_df = subset_df.merge(periodicals[['id','folder_path']].set_index('id'), 
+                                left_on='publication_id', right_index = True)
 
     print(f"Rows in dataset:{len(subset_df['page_id'].unique())}")
     subset_df
@@ -196,7 +197,8 @@ def __(all_bounding_boxes, periodicals):
 
 
 @app.cell
-def __():
+def __(subset_df):
+    subset_df
     return
 
 

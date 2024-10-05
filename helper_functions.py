@@ -3,6 +3,14 @@ import io
 import base64
 import math
 import difflib
+from pdf2image import convert_from_path
+
+import time
+import os
+import logging
+from datetime import datetime
+
+import logging
 
 def create_page_dict(df):
     # Initialize an empty dictionary to store the results
@@ -72,7 +80,7 @@ def split_tall_box(page, x0, y0, x1, y1, max_height, overlap):
     
     return split_images
 
-def process_bounding_box(page, coords, original_size, page_size):
+def process_bounding_box(page, key, coords, original_size, page_size):
     x0, y0, x1, y1 = scale_bbox([coords["x0"], coords["y0"], coords["x1"], coords["y1"]],
                                 original_size, page_size)
     
@@ -86,13 +94,17 @@ def process_bounding_box(page, coords, original_size, page_size):
     if height > 1.5 * width:
         max_height = int(1.5 * width)
         overlap = int(0.1 * width)
-        return split_tall_box(page, x0, y0, x1, y1, max_height, overlap)
+        images = split_tall_box(page, x0, y0, x1, y1, max_height, overlap)
+        return {key: images}
     else:
-        return crop_and_encode_image(page, x0, y0, x1, y1)
+        image = crop_and_encode_image(page, x0, y0, x1, y1)
+        return {key: [image]}
 
 def crop_and_encode_images(page, bounding_boxes, original_size, page_size):
-    return [process_bounding_box(page, coords, original_size, page_size) 
-            for coords in bounding_boxes.values()]
+    result = {}
+    for key, coords in bounding_boxes.items():
+        result.update(process_bounding_box(page, key, coords, original_size, page_size))
+    return result
 
 
 
@@ -196,3 +208,88 @@ def process_image_with_api(image_base64, client, model="pixtral-12b-2409"):
     except Exception as e:
         print(f"An error occurred: {str(e)}")
         return None, None
+
+def process_page(row, image_drive, page_dict, client, save_folder, dataset_df, log_df):
+    start_time = time.time()
+    
+    try:
+        file_path = os.path.join(image_drive, row['folder_path'], row['file_name'])
+        all_pages = convert_from_path(file_path, dpi=300)
+        
+        page = all_pages[row['page_number'] - 1].copy()
+        bounding_boxes = page_dict[str(row['page_id'])]
+        
+        cropped_images = crop_and_encode_images(
+            page,
+            bounding_boxes,
+            (row['width'], row['height']),
+            page.size
+        )
+        
+        process_articles(cropped_images, client, save_folder, dataset_df)
+        
+        end_time = time.time()
+        processing_time = end_time - start_time
+        
+        # Log successful processing
+        new_row = pd.DataFrame({
+            'page_id': [row['page_id']],
+            'status': ['Success'],
+            'processing_time': [processing_time],
+            'timestamp': [pd.Timestamp.now()]
+        })
+        log_df = pd.concat([log_df, new_row], ignore_index=True)
+        
+        print(f"Successfully processed page {row['page_id']} in {processing_time:.2f} seconds.")
+        
+    except Exception as e:
+        end_time = time.time()
+        processing_time = end_time - start_time
+        
+        logging.error(f"Error processing page {row['page_id']}: {str(e)}")
+        print(f"Error processing page {row['page_id']}. See log for details.")
+        
+        # Log failed processing
+        new_row = pd.DataFrame({
+            'page_id': [row['page_id']],
+            'status': ['Failed'],
+            'processing_time': [processing_time],
+            'timestamp': [pd.Timestamp.now()],
+            'error_message': [str(e)]
+        })
+        log_df = pd.concat([log_df, new_row], ignore_index=True)
+    
+    return log_df
+
+
+def process_articles(cropped_images, client, save_folder, dataset_df):
+    for article_id, image_string in cropped_images.items():
+        try:
+            content_list, usage_list = extract_text_from_images(image_string, client)
+            full_string = knit_string_list(content_list)
+            save_article_text(article_id, full_string, save_folder, dataset_df)
+            print(f"Processed article {article_id}")
+        except Exception as e:
+            logging.error(f"Error processing article {article_id}: {str(e)}")
+            print(f"Error processing article {article_id}. See log for details.")
+
+def extract_text_from_images(image_string, client):
+    content_list = []
+    usage_list = []
+    for i, image in enumerate(image_string):
+        try:
+            content, usage = process_image_with_api(image, client, model="pixtral-12b-2409")
+            if content is not None:
+                content_list.append(content)
+                usage_list.append(usage)
+        except Exception as e:
+            logging.error(f"Error processing image {i}: {str(e)}")
+    return content_list, usage_list
+
+def save_article_text(article_id, full_string, save_folder, dataset_df):
+    try:
+        file_name = dataset_df.loc[dataset_df['id'] == int(article_id), 'save_name'].iloc[0]
+        with open(os.path.join(save_folder, file_name), "w") as file:
+            file.write(full_string)
+    except Exception as e:
+        logging.error(f"Error saving article {article_id}: {str(e)}")
