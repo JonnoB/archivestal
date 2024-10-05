@@ -15,6 +15,7 @@ def __():
     from PIL import Image, ImageDraw
     import matplotlib.pyplot as plt
     import io
+    import json
 
     image_drive = '/media/jonno/ncse'
     return (
@@ -24,6 +25,7 @@ def __():
         create_page_dict,
         image_drive,
         io,
+        json,
         mo,
         os,
         pd,
@@ -106,10 +108,14 @@ def __(mo):
 
 
 @app.cell
-def __(all_bounding_boxes, create_page_dict):
+def __(all_bounding_boxes, create_page_dict, json):
     # Create the dictionary
     page_dict = create_page_dict(all_bounding_boxes)
-    return (page_dict,)
+
+    output_file = 'data/page_dict.json'
+    with open(output_file, 'w') as f:
+        json.dump(page_dict, f, indent=4)
+    return f, output_file, page_dict
 
 
 @app.cell
@@ -129,7 +135,6 @@ def __(page_dict):
 @app.cell
 def __(all_bounding_boxes):
     page_issue_df = all_bounding_boxes.groupby(['page_id', 'page_number','issue_id', 'pdf']).size().reset_index(name = 'counts')
-
     return (page_issue_df,)
 
 
@@ -185,7 +190,14 @@ def __(all_bounding_boxes, periodicals):
 
     print(f"Rows in dataset:{len(subset_df['page_id'].unique())}")
     subset_df
+
+    subset_df.to_parquet('data/example_set_1858-1860.parquet')
     return combined_mask, mask_1850_1852, mask_1858_1860, subset_df
+
+
+@app.cell
+def __():
+    return
 
 
 @app.cell
@@ -195,7 +207,6 @@ def __(subset_df):
 
 
     print(f"Number of issues to extract {len(target_pages_isues[['issue_id']].drop_duplicates())}, number of pages {len(target_pages_isues[['page_id']].drop_duplicates())},")
-
     return (target_pages_isues,)
 
 
